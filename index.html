@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DANMAKU PLAYER</title>
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100vw; height: 100vh;
+            background-color: #000; overflow: hidden; 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "微軟正黑體", sans-serif;
+        }
+
+        #app-container { position: relative; width: 100vw; height: 100vh; background-color: #000; }
+
+        #hover-sensor { position: absolute; top: 0; left: 0; width: 100%; height: 150px; z-index: 90; }
+
+        #control-panel {
+            position: absolute; top: 30px; left: 50%; transform: translateX(-50%);
+            z-index: 100; background: rgba(20, 20, 20, 0.65); 
+            backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
+            border: 1px solid rgba(255, 255, 255, 0.15); box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5); 
+            padding: 20px 30px; border-radius: 16px; display: flex; gap: 18px; align-items: center;
+            transition: opacity 0.5s ease, transform 0.5s ease; opacity: 1; color: white;
+            min-width: 600px; justify-content: center;
+        }
+        
+        #control-panel.hidden { opacity: 0; pointer-events: none; transform: translate(-50%, -20px); }
+
+        #panel-title { font-weight: bold; color: #ff3333; font-size: 16px; margin-right: 10px; letter-spacing: 1px; }
+
+        #url-input { 
+            width: 250px; padding: 10px; font-size: 14px; border-radius: 8px; 
+            border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.1); color: white;
+            transition: border-color 0.3s;
+        }
+        #url-input:focus { outline: none; border-color: #ff0000; }
+
+        button { 
+            padding: 10px 18px; font-size: 14px; cursor: pointer; border-radius: 8px; 
+            border: none; font-weight: bold; transition: background 0.3s, transform 0.1s; 
+        }
+        #play-btn { background-color: #ff0000; color: white; }
+        #play-btn:hover { background-color: #ff3333; }
+        #play-btn:active { transform: scale(0.95); } 
+        #fullscreen-btn { background-color: rgba(255,255,255,0.15); color: white; border: 1px solid rgba(255,255,255,0.1); }
+        #fullscreen-btn:hover { background-color: rgba(255,255,255,0.25); }
+        
+        .controls-group { display: flex; flex-direction: column; gap: 5px; }
+        .slider-container { display: flex; align-items: center; gap: 8px; font-size: 12px; color: rgba(255,255,255,0.7); }
+
+        input[type=range] { -webkit-appearance: none; background: transparent; width: 100px; }
+        input[type=range]::-webkit-slider-runnable-track { background: rgba(255,255,255,0.1); height: 4px; border-radius: 2px; }
+        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; height: 12px; width: 12px; background: white; border-radius: 50%; margin-top: -4px; cursor: pointer; }
+
+        #danmaku-container {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 50; pointer-events: none; 
+        }
+        
+        .danmaku-item {
+            position: absolute; white-space: nowrap; color: white; font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8), -1px -1px 2px rgba(0,0,0,0.8);
+            left: 100%; animation-name: fly; animation-timing-function: linear; animation-fill-mode: forwards;
+        }
+        @keyframes fly { 100% { transform: translateX(calc(-100vw - 100%)); } }
+
+        #video-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; }
+        
+        #end-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: #000; z-index: 20; 
+            display: flex; justify-content: center; align-items: center;
+            color: white; font-size: 24px; font-weight: bold; letter-spacing: 2px;
+            display: none; 
+        }
+
+    </style>
+</head>
+<body>
+
+    <div id="app-container">
+        <div id="hover-sensor"></div>
+        
+        <div id="control-panel">
+            <span id="panel-title">DANMAKU</span>
+            <input type="text" id="url-input" placeholder="貼上 YouTube 直播網址...">
+            <button id="play-btn">播放</button>
+            
+            <div class="controls-group">
+                <div class="slider-container">
+                    <label>速度:</label>
+                    <input type="range" id="speed-slider" min="5" max="25" value="18">
+                </div>
+                <div class="slider-container">
+                    <label>透明:</label>
+                    <input type="range" id="opacity-slider" min="0.1" max="1.0" step="0.1" value="1.0">
+                </div>
+            </div>
+
+            <button id="fullscreen-btn">全螢幕</button>
+        </div>
+
+        <div id="danmaku-container"></div>
+
+        <div id="end-screen">
+            <p>直播已結束或訊號中斷</p>
+        </div>
+
+        <div id="video-container">
+            <div id="yt-player"></div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://www.youtube.com/iframe_api"></script>
+
+    <script>
+        const socket = io();
+        const container = document.getElementById('danmaku-container');
+        const urlInput = document.getElementById('url-input');
+        const playBtn = document.getElementById('play-btn');
+        const endScreen = document.getElementById('end-screen');
+        
+        const controlPanel = document.getElementById('control-panel');
+        const speedSlider = document.getElementById('speed-slider');
+        const opacitySlider = document.getElementById('opacity-slider'); 
+        const fullscreenBtn = document.getElementById('fullscreen-btn');
+        const appContainer = document.getElementById('app-container');
+        const hoverSensor = document.getElementById('hover-sensor');
+
+        let currentOpacity = 1.0; 
+
+        // ==========================================
+        // 1. YouTube 播放器 API 核心邏輯
+        // ==========================================
+        let ytPlayer = null;
+        
+        function extractVideoId(url) {
+            const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+            const match = url.match(regExp);
+            return (match && match[2].length === 11) ? match[2] : null; 
+        }
+
+        playBtn.addEventListener('click', () => {
+            const url = urlInput.value;
+            const videoId = extractVideoId(url);
+            
+            if (!videoId) {
+                alert("網址格式錯誤，請輸入有效的 YouTube 網址！");
+                return;
+            }
+
+            endScreen.style.display = 'none';
+            container.innerHTML = ''; 
+            socket.emit('changeVideo', videoId);
+
+            if (!ytPlayer) {
+                ytPlayer = new YT.Player('yt-player', {
+                    width: '100%',
+                    height: '100%',
+                    videoId: videoId,
+                    playerVars: {
+                        'autoplay': 1,
+                        'controls': 1,
+                        'fs': 0, 
+                        'rel': 0
+                    },
+                    events: {
+                        'onReady': onPlayerReady,
+                        'onStateChange': onPlayerStateChange
+                    }
+                });
+            } else {
+                ytPlayer.loadVideoById(videoId);
+            }
+        });
+
+        function onPlayerReady(event) {
+            event.target.unMute();     
+            event.target.setVolume(100); 
+            event.target.playVideo();    
+        }
+
+        function onPlayerStateChange(event) {
+            if (event.data === YT.PlayerState.ENDED) {
+                endScreen.style.display = 'flex'; 
+            } else if (event.data === YT.PlayerState.PLAYING) {
+                endScreen.style.display = 'none'; 
+            }
+        }
+
+        // ==========================================
+        // 面板與全螢幕控制
+        // ==========================================
+        let hideTimeout;
+        const hideDelay = 5000; 
+
+        function resetHideTimer() {
+            controlPanel.classList.remove('hidden');
+            clearTimeout(hideTimeout);
+            hideTimeout = setTimeout(() => {
+                controlPanel.classList.add('hidden');
+            }, hideDelay);
+        }
+
+        document.addEventListener('mousemove', resetHideTimer);
+        hoverSensor.addEventListener('mousemove', resetHideTimer);
+        controlPanel.addEventListener('mouseenter', () => clearTimeout(hideTimeout));
+        controlPanel.addEventListener('mouseleave', resetHideTimer);
+        resetHideTimer();
+
+        fullscreenBtn.addEventListener('click', () => {
+            if (!document.fullscreenElement) {
+                appContainer.requestFullscreen().catch(err => console.error(err));
+                fullscreenBtn.innerText = "退出全螢幕";
+            } else {
+                document.exitFullscreen();
+                fullscreenBtn.innerText = "進入全螢幕";
+            }
+        });
+
+        opacitySlider.addEventListener('input', () => {
+            currentOpacity = opacitySlider.value;
+            document.querySelectorAll('.danmaku-item').forEach(item => item.style.opacity = currentOpacity);
+        });
+
+ // ==========================================
+        // 5. 接收彈幕與處理 (防爆衝 + 加大字體)
+        // ==========================================
+        socket.on('chatMessage', (data) => {
+            
+            // 【神級防爆衝機制：加回這一行】
+            // 請放心：這完全不會影響影片的聲音與播放！
+            // 它只會在你看不見畫面的時候，停止「製造」新的文字，完美解決切回來的塞車海嘯。
+            if (document.hidden) return;
+
+            let cleanText = data.text.replace(/:[^:\s]+:/g, '').trim();
+            if (cleanText === '') return;
+
+            const danmaku = document.createElement('div');
+            danmaku.className = 'danmaku-item';
+            danmaku.innerText = cleanText; 
+
+            // 應用透明度
+            danmaku.style.opacity = currentOpacity;
+            
+            // 速度計算
+            const sliderValue = parseInt(speedSlider.value, 10);
+            const actualDuration = 30 - sliderValue;
+            danmaku.style.animationDuration = `${actualDuration}s`;
+
+            // 【修改：字幕大小全面升級調大】
+            const currentCount = document.querySelectorAll('.danmaku-item').length;
+            let fontSize = 48; // 預設超大字體 (原本 36)
+            
+            if (currentCount > 40) {
+                fontSize = 24; // 畫面塞爆時，字體還是有 24px (原本 16)
+            } else if (currentCount > 20) {
+                fontSize = 32; // 畫面擁擠時 (原本 24)
+            } else if (currentCount > 10) {
+                fontSize = 40; // 畫面微熱鬧時 (原本 30)
+            }
+            danmaku.style.fontSize = `${fontSize}px`;
+
+            // 高度設定
+            const randomTop = Math.floor(Math.random() * 85) + 5;
+            danmaku.style.top = `${randomTop}%`;
+
+            container.appendChild(danmaku);
+
+            // 第一重垃圾回收：動畫結束即刪除
+            danmaku.addEventListener('animationend', () => {
+                danmaku.remove();
+            });
+
+            // 第二重垃圾回收：加上安全保險，時間到了強制清除
+            setTimeout(() => {
+                if (danmaku.parentNode) {
+                    danmaku.remove();
+                }
+            }, actualDuration * 1000 + 500); 
+        });
+    </script>
+</body>
+</html>
