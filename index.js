@@ -10,20 +10,20 @@ app.get("/", (req, res) => {
   res.sendFile(__dirname + "/index.html");
 });
 
-// 【核心改變 1：從環境變數讀取 API 金鑰 (保護你的金鑰不被偷)】
+// 從環境變數讀取 API 金鑰 (保護你的金鑰不被偷)
 const API_KEY = process.env.YOUTUBE_API_KEY;
 
 let currentPollingInterval = null; 
 
 io.on("connection", (socket) => {
-  console.log("🟢 有網頁連線了！");
+  console.log("有網頁連線了！");
 
   socket.on("changeVideo", async (videoId) => {
     console.log(`收到切換影片請求，影片 ID: ${videoId}`);
 
     // 如果沒有設定金鑰，直接報錯
     if (!API_KEY) {
-      console.error("❌ 系統錯誤：找不到 YouTube API 金鑰！");
+      console.error("系統錯誤：找不到 YouTube API 金鑰！");
       return;
     }
 
@@ -41,18 +41,18 @@ io.on("connection", (socket) => {
       const videoData = await videoRes.json();
 
       if (!videoData.items || videoData.items.length === 0) {
-        console.log("⚠️ 找不到影片，或這不是一部公開影片。");
+        console.log("找不到影片，或這不是一部公開影片。");
         return;
       }
 
       const liveDetails = videoData.items[0].liveStreamingDetails;
       if (!liveDetails || !liveDetails.activeLiveChatId) {
-        console.log("⚠️ 這部影片目前沒有開放直播聊天室！");
+        console.log("這部影片目前沒有開放直播聊天室！");
         return;
       }
 
       const liveChatId = liveDetails.activeLiveChatId;
-      console.log(`✅ 成功取得聊天室 ID: ${liveChatId}，開始抓取...`);
+      console.log(`成功取得聊天室 ID: ${liveChatId}，開始抓取...`);
 
       // 官方 API 會給我們一個「書籤 (pageToken)」，讓我們下次只抓新的留言
       let nextPageToken = ""; 
@@ -70,12 +70,20 @@ io.on("connection", (socket) => {
 
           // 如果有抓到新留言
           if (chatData.items && chatData.items.length > 0) {
-            chatData.items.forEach(item => {
+            
+            // 【神級優化：平滑發送演算法 (Message Queue)】
+            const totalMessages = chatData.items.length;
+            // 將 3000 毫秒平均分配給這批留言，算出每條留言間隔的毫秒數
+            const delayBetweenMessages = 3000 / totalMessages;
+
+            chatData.items.forEach((item, index) => {
               const authorName = item.authorDetails.displayName;
               const message = item.snippet.displayMessage;
               
-              // 廣播給前端網頁
-              io.emit("chatMessage", { name: authorName, text: message });
+              // 讓留言排隊，間隔指定時間後才傳給前端，製造「真・即時」的流暢錯覺
+              setTimeout(() => {
+                io.emit("chatMessage", { name: authorName, text: message });
+              }, index * delayBetweenMessages);
             });
           }
 
@@ -90,7 +98,7 @@ io.on("connection", (socket) => {
       }, 3000); // 3000毫秒 = 3秒
 
     } catch (error) {
-      console.error("❌ 發生預期外錯誤:", error.message);
+      console.error("發生預期外錯誤:", error.message);
     }
   });
 });
@@ -98,5 +106,5 @@ io.on("connection", (socket) => {
 // 讓雲端主機決定 Port
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 伺服器已啟動！正在監聽 Port: ${PORT}`);
+  console.log(`伺服器已啟動！正在監聽 Port: ${PORT}`);
 });
