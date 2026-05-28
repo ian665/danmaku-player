@@ -13,7 +13,7 @@ app.get("/", (req, res) => {
 const API_KEY = process.env.YOUTUBE_API_KEY;
 
 // 【核心修改 1】使用 Map 來儲存「每個影片」專屬的抓取計時器與觀看人數
-// 資料結構長這樣: { "影片ID": { intervalId: 計時器, viewers: 觀看人數 } }
+// 資料結構長這樣: { "影片ID": { timeoutId: 計時器, viewers: 觀看人數 } }
 const activeStreams = new Map();
 
 io.on("connection", (socket) => {
@@ -53,7 +53,7 @@ io.on("connection", (socket) => {
     console.log(`影片 ${videoId} 是新的，伺服器開始初始化抓取...`);
     
     // 先在 Map 中登記這部影片，觀看人數設為 1
-    activeStreams.set(videoId, { intervalId: null, viewers: 1 });
+    activeStreams.set(videoId, { timeoutId: null, viewers: 1 });
 
     try {
       // 步驟一：向官方詢問這部影片的「聊天室 ID」
@@ -79,8 +79,18 @@ io.on("connection", (socket) => {
 
       let nextPageToken = ""; 
 
-      // 步驟二：啟動專屬這部影片的計時器
-      const intervalId = setInterval(async () => {
+      const scheduleNextPoll = (delayMs) => {
+        const streamData = activeStreams.get(videoId);
+        if (!streamData) return;
+
+        streamData.timeoutId = setTimeout(pollChat, delayMs);
+      };
+
+      // 步驟二：啟動專屬這部影片的輪詢
+      const pollChat = async () => {
+        const streamData = activeStreams.get(videoId);
+        if (!streamData) return;
+
         try {
           let chatUrl = `https://www.googleapis.com/youtube/v3/liveChat/messages?liveChatId=${liveChatId}&part=snippet,authorDetails&key=${API_KEY}`;
           if (nextPageToken) chatUrl += `&pageToken=${nextPageToken}`;
@@ -88,9 +98,24 @@ io.on("connection", (socket) => {
           const chatRes = await fetch(chatUrl);
           const chatData = await chatRes.json();
 
+          if (!chatRes.ok) {
+            const reason = chatData.error?.errors?.[0]?.reason || chatData.error?.message || `HTTP ${chatRes.status}`;
+            console.error(`抓取 ${videoId} 留言時 YouTube API 回傳錯誤: ${reason}`);
+
+            if (reason === "liveChatEnded" || reason === "liveChatDisabled") {
+              clearTimeout(streamData.timeoutId);
+              activeStreams.delete(videoId);
+              return;
+            }
+
+            scheduleNextPoll(10000);
+            return;
+          }
+
           if (chatData.items && chatData.items.length > 0) {
             const totalMessages = chatData.items.length;
-            const delayBetweenMessages = 3000 / totalMessages;
+            const pollingInterval = chatData.pollingIntervalMillis || 5000;
+            const delayBetweenMessages = pollingInterval / totalMessages;
 
             chatData.items.forEach((item, index) => {
               const authorName = item.authorDetails.displayName;
@@ -108,19 +133,16 @@ io.on("connection", (socket) => {
             nextPageToken = chatData.nextPageToken;
           }
 
+          // YouTube が指定する間隔を守る。固定3秒だと長時間再生で止まりやすい。
+          scheduleNextPoll(chatData.pollingIntervalMillis || 5000);
+
         } catch (err) {
           console.error(`抓取 ${videoId} 留言時發生錯誤:`, err.message);
+          scheduleNextPoll(10000);
         }
-      }, 3000);
+      };
 
-      // 將啟動的計時器 ID 存回 Map 裡面，方便以後清除
-      const streamData = activeStreams.get(videoId);
-      if (streamData) {
-        streamData.intervalId = intervalId;
-      } else {
-        // 防呆機制：如果在等 API 回應的期間，那唯一一個觀眾剛好關掉網頁了
-        clearInterval(intervalId);
-      }
+      pollChat();
 
     } catch (error) {
       console.error("發生預期外錯誤:", error.message);
@@ -147,7 +169,7 @@ io.on("connection", (socket) => {
       // 如果這部影片已經沒人在看了，就砍掉計時器，節省 YouTube API 配額與伺服器效能
       if (streamData.viewers <= 0) {
         console.log(`影片 ${videoId} 已經沒人看了，停止抓取聊天室並釋放資源。`);
-        clearInterval(streamData.intervalId);
+        clearTimeout(streamData.timeoutId);
         activeStreams.delete(videoId);
       }
     }

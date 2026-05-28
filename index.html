@@ -129,6 +129,10 @@
         const hoverSensor = document.getElementById('hover-sensor');
 
         let currentOpacity = 1.0; 
+        const danmakuQueue = [];
+        const laneAvailableAt = [];
+        const danmakuReleaseInterval = 800;
+        const maxQueuedDanmaku = 400;
 
         // ==========================================
         // 1. YouTube 播放器 API 核心邏輯
@@ -152,6 +156,8 @@
 
             endScreen.style.display = 'none';
             container.innerHTML = ''; 
+            danmakuQueue.length = 0;
+            laneAvailableAt.length = 0;
             socket.emit('changeVideo', videoId);
 
             if (!ytPlayer) {
@@ -224,6 +230,89 @@
             document.querySelectorAll('.danmaku-item').forEach(item => item.style.opacity = currentOpacity);
         });
 
+        function getDanmakuSettings() {
+            const sliderValue = parseInt(speedSlider.value, 10);
+            const actualDuration = 30 - sliderValue;
+            const currentCount = document.querySelectorAll('.danmaku-item').length;
+            let fontSize = 48;
+            
+            if (currentCount > 40) {
+                fontSize = 24;
+            } else if (currentCount > 20) {
+                fontSize = 32;
+            } else if (currentCount > 10) {
+                fontSize = 40;
+            }
+
+            return { actualDuration, fontSize };
+        }
+
+        function findOpenLane(fontSize) {
+            const now = Date.now();
+            const laneHeight = Math.max(34, fontSize + 12);
+            const topMargin = Math.max(20, Math.floor(window.innerHeight * 0.05));
+            const usableHeight = Math.max(laneHeight, window.innerHeight - topMargin * 2);
+            const laneCount = Math.max(1, Math.floor(usableHeight / laneHeight));
+
+            while (laneAvailableAt.length > laneCount) {
+                laneAvailableAt.pop();
+            }
+
+            for (let i = 0; i < laneCount; i++) {
+                if (!laneAvailableAt[i] || laneAvailableAt[i] <= now) {
+                    return {
+                        index: i,
+                        top: topMargin + i * laneHeight
+                    };
+                }
+            }
+
+            return null;
+        }
+
+        function showDanmaku(cleanText) {
+            const { actualDuration, fontSize } = getDanmakuSettings();
+            const lane = findOpenLane(fontSize);
+            if (!lane) return false;
+
+            const danmaku = document.createElement('div');
+            danmaku.className = 'danmaku-item';
+            danmaku.innerText = cleanText; 
+
+            danmaku.style.opacity = currentOpacity;
+            danmaku.style.animationDuration = `${actualDuration}s`;
+            danmaku.style.fontSize = `${fontSize}px`;
+            danmaku.style.top = `${lane.top}px`;
+
+            container.appendChild(danmaku);
+
+            const textWidth = danmaku.offsetWidth;
+            const screenWidth = Math.max(window.innerWidth, 1);
+            const safeGap = Math.max(900, (textWidth / screenWidth) * actualDuration * 1000 + 700);
+            laneAvailableAt[lane.index] = Date.now() + safeGap;
+
+            danmaku.addEventListener('animationend', () => {
+                danmaku.remove();
+            });
+
+            setTimeout(() => {
+                if (danmaku.parentNode) {
+                    danmaku.remove();
+                }
+            }, actualDuration * 1000 + 500); 
+
+            return true;
+        }
+
+        setInterval(() => {
+            if (document.hidden || danmakuQueue.length === 0) return;
+
+            const nextText = danmakuQueue[0];
+            if (showDanmaku(nextText)) {
+                danmakuQueue.shift();
+            }
+        }, danmakuReleaseInterval);
+
  // ==========================================
         // 5. 接收彈幕與處理 (防爆衝 + 加大字體)
         // ==========================================
@@ -237,48 +326,10 @@
             let cleanText = data.text.replace(/:[^:\s]+:/g, '').trim();
             if (cleanText === '') return;
 
-            const danmaku = document.createElement('div');
-            danmaku.className = 'danmaku-item';
-            danmaku.innerText = cleanText; 
-
-            // 應用透明度
-            danmaku.style.opacity = currentOpacity;
-            
-            // 速度計算
-            const sliderValue = parseInt(speedSlider.value, 10);
-            const actualDuration = 30 - sliderValue;
-            danmaku.style.animationDuration = `${actualDuration}s`;
-
-            // 【修改：字幕大小全面升級調大】
-            const currentCount = document.querySelectorAll('.danmaku-item').length;
-            let fontSize = 48; // 預設超大字體 (原本 36)
-            
-            if (currentCount > 40) {
-                fontSize = 24; // 畫面塞爆時，字體還是有 24px (原本 16)
-            } else if (currentCount > 20) {
-                fontSize = 32; // 畫面擁擠時 (原本 24)
-            } else if (currentCount > 10) {
-                fontSize = 40; // 畫面微熱鬧時 (原本 30)
+            danmakuQueue.push(cleanText);
+            if (danmakuQueue.length > maxQueuedDanmaku) {
+                danmakuQueue.shift();
             }
-            danmaku.style.fontSize = `${fontSize}px`;
-
-            // 高度設定
-            const randomTop = Math.floor(Math.random() * 85) + 5;
-            danmaku.style.top = `${randomTop}%`;
-
-            container.appendChild(danmaku);
-
-            // 第一重垃圾回收：動畫結束即刪除
-            danmaku.addEventListener('animationend', () => {
-                danmaku.remove();
-            });
-
-            // 第二重垃圾回收：加上安全保險，時間到了強制清除
-            setTimeout(() => {
-                if (danmaku.parentNode) {
-                    danmaku.remove();
-                }
-            }, actualDuration * 1000 + 500); 
         });
     </script>
 </body>
